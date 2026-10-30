@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OMA парсер</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --text:#1d2330; --muted:#6b7280; --line:#e5e7eb; --accent:#ff6a00; --ok:#16a34a; --bad:#dc2626; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#12141a; --card:#1b1e26; --text:#e8eaf0; --muted:#9aa1ad; --line:#2a2e38; } }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  .wrap { max-width:1200px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:22px; margin:0 0 4px; } .muted { color:var(--muted); }
+  .head { display:flex; justify-content:space-between; align-items:flex-end; flex-wrap:wrap; gap:12px; margin-bottom:20px; }
+  .btns { display:flex; gap:8px; flex-wrap:wrap; }
+  button, .btn { border:1px solid var(--line); background:var(--card); color:var(--text); padding:8px 14px; border-radius:8px; cursor:pointer; font:inherit; text-decoration:none; }
+  .primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; }
+  .big { font-size:40px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .bar { height:14px; background:var(--line); border-radius:7px; overflow:hidden; margin:12px 0 6px; }
+  .bar > div { height:100%; background:var(--accent); width:0; transition:width .5s; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin:12px 0; }
+  .stat .v { font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .stat .l { color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.03em; }
+  .pill { display:inline-block; padding:2px 10px; border-radius:99px; font-size:12px; font-weight:600; }
+  .on { background:#dcfce7; color:#166534; } .off { background:#fee2e2; color:#991b1b; } .fin { background:#dbeafe; color:#1e40af; }
+  table { width:100%; border-collapse:collapse; } td, th { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; font-size:12px; } td a { color:inherit; }
+  .scroll { overflow-x:auto; } h2 { font-size:16px; margin:24px 0 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div>
+      <h1>Парсинг каталога oma.by</h1>
+      <div class="muted"><span id="state" class="pill">…</span> <span id="worker"></span></div>
+    </div>
+    <div class="btns">
+      <button class="primary" onclick="act('start')">Старт</button>
+      <button onclick="act('stop')">Пауза</button>
+      <button onclick="act('retry-errors')">Повторить ошибки</button>
+      <button onclick="resetBans()">Сбросить кулдаун прокси</button>
+      <button onclick="if(confirm('Перепарсить весь каталог заново?')) act('restart')">Перепарсить всё</button>
+      <a class="btn primary" href="/export/xlsx">Скачать Excel</a>
+      <a class="btn" href="/export/xlsx?wide=50" title="50 самых частых характеристик отдельными колонками">Excel + характеристики</a>
+      <a class="btn" href="/docs">API</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="muted">Спарсено товаров</div>
+    <div class="big"><span id="done">0</span> <span class="muted" style="font-size:24px">из <span id="total">0</span></span></div>
+    <div class="bar"><div id="bar"></div></div>
+    <div class="muted"><span id="pct">0</span>% · <span id="discovery"></span></div>
+  </div>
+
+  <div class="grid">
+    <div class="card stat"><div class="l">Скорость</div><div class="v" id="speed">–</div><div class="muted">товаров/мин</div></div>
+    <div class="card stat"><div class="l">Осталось</div><div class="v" id="eta">–</div><div class="muted" id="remaining"></div></div>
+    <div class="card stat"><div class="l">Запросов/мин</div><div class="v" id="rpm">–</div><div class="muted" id="blocked"></div></div>
+    <div class="card stat"><div class="l">Ошибки</div><div class="v" id="errors">–</div><div class="muted" id="gone"></div></div>
+    <div class="card stat"><div class="l">Категории / листинги</div><div class="v" id="listings">–</div><div class="muted" id="listings2"></div></div>
+    <div class="card stat"><div class="l">Прокси</div><div class="v" id="proxies">–</div><div class="muted" id="proxies2"></div></div>
+  </div>
+
+  <h2>Последние спарсенные</h2>
+  <div class="card scroll"><table><thead><tr><th>Название</th><th>Артикул</th><th>Цена</th><th>Категория</th><th>Характ.</th></tr></thead><tbody id="last"></tbody></table></div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const fmt = n => (n ?? 0).toLocaleString('ru-RU');
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function resetBans() { await fetch('/api/proxies/reset-bans', {method:'POST'}); setTimeout(load, 3500); }
+async function act(name) { await fetch('/api/parser/' + name, {method:'POST'}); load(); }
+
+async function load() {
+  try {
+    const s = await (await fetch('/api/stats')).json();
+    const p = s.products, l = s.listings;
+    $('done').textContent = fmt(p.done); $('total').textContent = fmt(p.total);
+    $('pct').textContent = p.percent; $('bar').style.width = p.percent + '%';
+    $('discovery').textContent = s.discovery_in_progress ? `идёт обход категорий — «всего» ещё растёт (осталось листингов: ${fmt(l.remaining)})` : 'обход категорий завершён';
+    const st = $('state');
+    if (s.finished) { st.textContent = 'завершено'; st.className = 'pill fin'; }
+    else if (s.running) { st.textContent = 'работает'; st.className = 'pill on'; }
+    else { st.textContent = 'на паузе'; st.className = 'pill off'; }
+    $('worker').textContent = s.worker ? `воркер онлайн · в работе ${s.worker.in_flight}, в очереди ${s.worker.queue}` : 'воркер не отвечает';
+    $('speed').textContent = fmt(s.speed.products_per_min);
+    $('eta').textContent = s.eta_minutes == null ? '–' : (s.eta_minutes > 90 ? (s.eta_minutes/60).toFixed(1) + ' ч' : Math.round(s.eta_minutes) + ' мин');
+    $('remaining').textContent = fmt(p.remaining) + ' в очереди';
+    $('rpm').textContent = fmt(s.speed.requests_per_min);
+    $('blocked').textContent = `блокировок/мин: ${fmt(s.speed.blocked_per_min)}`;
+    $('errors').textContent = fmt(p.errors);
+    $('gone').textContent = `404: ${fmt(p.gone)} · не товар: ${fmt(p.skipped_not_product)}`;
+    $('listings').textContent = `${fmt(l.done)} / ${fmt(l.total)}`;
+    $('listings2').textContent = `ошибок: ${fmt(l.errors)}`;
+    $('proxies').textContent = s.proxies ? `${fmt(s.proxies.total - s.proxies.banned)} / ${fmt(s.proxies.total)}` : '–';
+    $('proxies2').textContent = s.proxies ? `в кулдауне: ${s.proxies.banned}, заняты: ${s.proxies.busy}` : '';
+  } catch (e) { $('worker').textContent = 'API недоступно'; }
+}
+
+async function loadLast() {
+  try {
+    const rows = await (await fetch('/api/products?limit=15')).json();
+    $('last').innerHTML = rows.map(r => `<tr><td><a href="${esc(r.url)}" target="_blank">${esc(r.name)}</a></td><td>${esc(r.sku)}</td><td>${r.price ?? ''} ${esc(r.currency)}</td><td>${esc(r.category)}</td><td>${Object.keys(r.params || {}).length}</td></tr>`).join('');
+  } catch (e) {}
+}
+
+load(); loadLast();
+setInterval(load, 2000); setInterval(loadLast, 5000);
+</script>
+</body>
+</html>

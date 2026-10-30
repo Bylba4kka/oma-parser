@@ -1,0 +1,5 @@
+volumes
+redisdata
+.env
+shared
+__pycache__

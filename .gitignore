@@ -1,0 +1,6 @@
+.env
+shared/proxies.txt
+shared/exports/
+volumes/
+redisdata/
+__pycache__/
